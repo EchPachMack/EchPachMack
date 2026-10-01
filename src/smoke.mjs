@@ -1,14 +1,10 @@
-// No-auth tool call: proves the API key and network path work before any OAuth.
+// No-auth tool call through a session: proves the API key and network path work before any OAuth.
 import { composio, userId } from './client.mjs';
 
-const result = await composio.tools.execute('HACKERNEWS_GET_FRONTPAGE', {
-  userId,
-  arguments: {},
-  // Resolving 'latest' returns 404 for this toolkit, so pin an explicit version.
-  version: '20260312_00',
-});
+const session = await composio.create(userId, { toolkits: ['hackernews'] });
+const result = await session.execute('HACKERNEWS_GET_FRONTPAGE', {});
 
-if (!result.successful) {
+if (result.error) {
   console.error('Tool call failed:', result.error);
   process.exit(1);
 }

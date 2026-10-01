@@ -13,8 +13,10 @@ The key is sent in the `x-api-key` header. If your environment injects that head
 proxy (API credentials), leave `COMPOSIO_API_KEY` unset; the scripts pass a placeholder and run
 Node with `NODE_USE_ENV_PROXY=1` so built-in `fetch` goes through `HTTPS_PROXY`.
 
-The key needs `tool_execution` write access for both scripts, and `auth_configs` write access
-for `connect` the first time it sets up a toolkit.
+Both scripts run tools through a session (`composio.create(userId)`), so the key needs
+**Session management** with Read and Write. New scoped keys can't get the legacy `tool_execution`
+permission that `composio.tools.execute()` requires. Permissions can't be edited after a key is
+created; to change them, create a new key.
 
 ## Scripts
 
