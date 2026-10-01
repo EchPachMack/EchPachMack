@@ -20,7 +20,7 @@ created; to change them, create a new key.
 
 ## Scripts
 
-- `npm run smoke`: no-auth call (`HACKERNEWS_GET_FRONTPAGE`) that checks your key and network.
+- `npm run smoke`: no-auth call (`HACKERNEWS_GET_TOP_STORIES`) that checks your key and network.
 - `npm run connect -- [toolkit] [toolSlug]`: connects a toolkit through OAuth, then calls a tool.
   It defaults to `github` and `GITHUB_GET_THE_AUTHENTICATED_USER`. If the user already has an
   active connection, it reuses it.

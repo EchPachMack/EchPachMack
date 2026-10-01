@@ -2,7 +2,7 @@
 import { composio, userId } from './client.mjs';
 
 const session = await composio.create(userId, { toolkits: ['hackernews'] });
-const result = await session.execute('HACKERNEWS_GET_FRONTPAGE', {});
+const result = await session.execute('HACKERNEWS_GET_TOP_STORIES', {});
 
 if (result.error) {
   console.error('Tool call failed:', result.error);
