@@ -1,0 +1,12 @@
+{
+  "name": "echpachmack",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "smoke": "node --env-file-if-exists=.env src/smoke.mjs",
+    "connect": "node --env-file-if-exists=.env src/connect.mjs"
+  },
+  "dependencies": {
+    "@composio/core": "^0.17.0"
+  }
+}
