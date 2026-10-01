@@ -1,12 +1,11 @@
 // No-auth tool call: proves the API key and network path work before any OAuth.
-import { Composio } from '@composio/core';
-
-const composio = new Composio();
+import { composio, userId } from './client.mjs';
 
 const result = await composio.tools.execute('HACKERNEWS_GET_FRONTPAGE', {
-  userId: process.env.COMPOSIO_USER_ID ?? 'default',
+  userId,
   arguments: {},
-  dangerouslySkipVersionCheck: true,
+  // Resolving 'latest' returns 404 for this toolkit, so pin an explicit version.
+  version: '20260312_00',
 });
 
 if (!result.successful) {

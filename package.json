@@ -3,8 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "smoke": "node --env-file-if-exists=.env src/smoke.mjs",
-    "connect": "node --env-file-if-exists=.env src/connect.mjs"
+    "smoke": "NODE_USE_ENV_PROXY=1 node --env-file-if-exists=.env src/smoke.mjs",
+    "connect": "NODE_USE_ENV_PROXY=1 node --env-file-if-exists=.env src/connect.mjs"
   },
   "dependencies": {
     "@composio/core": "^0.17.0"

@@ -1,10 +1,8 @@
 // Connect a toolkit (OAuth via Composio's managed auth) and make a first authenticated call.
 // Usage: npm run connect -- [toolkit] [toolSlug]
-import { Composio } from '@composio/core';
+import { composio, userId } from './client.mjs';
 
 const [toolkit = 'github', toolSlug = 'GITHUB_GET_THE_AUTHENTICATED_USER'] = process.argv.slice(2);
-const userId = process.env.COMPOSIO_USER_ID ?? 'default';
-const composio = new Composio();
 
 const existing = await composio.connectedAccounts.list({
   userIds: [userId],
