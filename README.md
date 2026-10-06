@@ -40,5 +40,20 @@ Open `futdraft/index.html` in a browser. It has no build step and no dependencie
    Revenue comes from media, tickets (these grow with win %) and playoff home games. The season ends with a
    profit-and-loss summary and the owner's verdict.
 
-Files: `players.js` (player pool), `finance.js` (cap rules and economics), `league.js` (schedule, simulation,
-playoffs) and `app.js` (UI). Ratings and salaries are approximate fan estimates.
+6. Every player has 15 attributes in 5 groups: shooting (three, mid-range, free throws), offense (finishing,
+   passing, ball handling), defense (perimeter, rim protection, steals, blocks), physical (rebounding,
+   athleticism, health) and mind (IQ, clutch). Attributes come from position, play style and OVR, with
+   hand-set signature skills for stars. Teams get the same ratings, weighted by rotation minutes, plus
+   ORtg/DRtg/NET/pace from games played.
+7. Games are simulated possession by possession: shot selection follows each player's shooting profile, and
+   make chances depend on the shooter's rating against the defense. Turnovers, steals, blocks, offensive
+   rebounds, fouls, overtime and full box scores are all simulated. The league averages about 112 points,
+   99 possessions and 36% from three.
+8. Clutch: in the last 5 minutes and in overtime, with the margin at 5 or less, the ball goes to stars
+   weighted by their clutch rating. Clutch shifts make chances by about ±8%, so high-clutch players rise and
+   low-clutch players drop. Odds stay between 12% and 80%, so anyone can still hit the game-winner.
+   Clutch points, clutch percentage and game-winning shots are tracked.
+
+Files: `players.js` (player pool), `ratings.js` (attributes), `finance.js` (cap rules and economics),
+`league.js` (schedule, possession simulation, playoffs) and `app.js` (UI). Ratings and salaries are approximate
+fan estimates.

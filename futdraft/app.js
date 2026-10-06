@@ -1,6 +1,6 @@
 // NBA FUT Draft: pick a franchise and a captain, draft 13 players under the salary cap, then play a full NBA season.
 const SAVE_KEY = "nba-futdraft-v2";
-const DATA_VERSION = 2;
+const DATA_VERSION = 3;
 const SLOTS = [
   { key: "PG", label: "PG", accepts: ["PG"], adjacent: ["SG"], starter: true, draft: true },
   { key: "SG", label: "SG", accepts: ["SG"], adjacent: ["PG", "SF"], starter: true, draft: true },
@@ -30,13 +30,21 @@ function freshState() {
     v: DATA_VERSION, phase: "franchise", franchise: null, lineup: {}, pending: null,
     owners: {}, dead: [], mleUsed: false, injuries: {}, schedule: null, day: 0, lastDay: 0, deadline: 0,
     fin: { gate: 0, playoffGate: 0, salaryPaid: 0 }, po: null, tab: "overview", sel: null,
-    trade: { out: null, in: null }, news: [],
+    trade: { out: null, in: null }, news: [], stats: emptyStats(), info: null, statKind: "reg", teamSort: "net",
   };
+}
+
+function emptyStats() {
+  return { reg: { players: {}, teams: {} }, po: { players: {}, teams: {} } };
 }
 
 function load() {
   try {
     const s = JSON.parse(localStorage.getItem(SAVE_KEY));
+    if (s && s.v === 2) {
+      // Version 2 saves have no detailed stats yet: keep the season and start counting from today.
+      Object.assign(s, { v: 3, stats: emptyStats(), info: null, statKind: "reg", teamSort: "net" });
+    }
     return s && s.v === DATA_VERSION ? s : null;
   } catch {
     return null;
@@ -100,33 +108,62 @@ function userRating(onlyHealthy = false) {
   return ids.length ? rotationRating(ids.map((id) => P(id).ovr)) : 0;
 }
 
-function userStrength() {
+const ownerTeam = (id) => (state.owners[id] === "USER" ? state.franchise : state.owners[id]);
+
+// Your rotation: healthy starters in their slots (an injured starter is replaced by the best healthy bench player), then the bench by OVR.
+function userRotation() {
+  const starters = SLOTS.filter((s) => s.starter).map((s) => state.lineup[s.key]).filter((id) => id != null && healthy(id)).map(P);
+  const bench = rosterIds().map(P).filter((p) => healthy(p.id) && !starters.includes(p)).sort((a, b) => b.ovr - a.ovr);
+  while (starters.length < 5 && bench.length) starters.push(bench.shift());
+  return [...starters, ...bench];
+}
+
+function teamRotation(code) {
+  if (code === state.franchise) return userRotation();
+  return Object.keys(state.owners).filter((id) => state.owners[id] === code && healthy(id)).map(P).sort((a, b) => b.ovr - a.ovr);
+}
+
+// Chemistry turns into a small shooting and ball-security bonus (-2.5..+2.5). AI clubs are settled teams: +1.
+function simTeam(code) {
   const c = teamChem();
-  return userRating(true) + (c.sum / c.max) * 5 - 2.5;
+  const chem = code === state.franchise ? (c.sum / c.max) * 5 - 2.5 : 1;
+  return makeTeam(code, teamRotation(code), chem);
 }
 
-function aiRatings() {
-  const lists = {};
-  for (const t of ALL_TEAMS) lists[t] = [];
-  for (const [id, owner] of Object.entries(state.owners)) if (lists[owner]) lists[owner].push(P(id).ovr);
-  const out = {};
-  for (const t of ALL_TEAMS) out[t] = rotationRating(lists[t]) + 1.5;
-  return out;
+// Team-level ratings: minutes-weighted attributes of the current rotation plus results on the court.
+function teamRatings(code) {
+  const t = code === state.franchise && !state.schedule ? makeTeam(code, userRotation(), 0) : simTeam(code);
+  const r = t.r;
+  const top = t.rot.map((p, i) => ({ p, u: t.usage[i] })).sort((x, y) => y.u - x.u).slice(0, 3);
+  const ts = state.stats.reg.teams[code];
+  return {
+    code, ovr: rotationRating(t.rot.map((p) => p.ovr)), atk: offenseScore(r), def: defenseScore(r),
+    three: r.three, ins: r.ins, pas: r.pas, perD: r.perD, intD: r.intD, reb: r.reb, ath: r.ath,
+    clu: top.reduce((s, x) => s + x.p.a.clu, 0) / top.length,
+    ortg: ts && ts.poss ? (100 * ts.pts) / ts.poss : null,
+    drtg: ts && ts.poss ? (100 * ts.opp) / ts.poss : null,
+    pace: ts && ts.g ? ts.poss / ts.g : null,
+    net: ts && ts.poss ? (100 * (ts.pts - ts.opp)) / ts.poss : null,
+  };
 }
 
-function strengths() {
-  const s = aiRatings();
-  s[state.franchise] = userStrength();
-  return s;
-}
+const CARD_ATTRS = ["three", "mid", "ins", "pas", "perD", "intD", "reb", "clu"];
+const attrShort = (k) => ATTRS.find((x) => x.key === k).short;
+const attrLevel = (v) => (v >= 88 ? "a-elite" : v >= 78 ? "a-good" : v >= 65 ? "a-mid" : "a-low");
+// Team averages sit lower than single-player ratings, so they get a shifted scale.
+const teamLevel = (v) => attrLevel(v + 9);
 
-function cardHtml(p, extra = "", note = "", cls = "") {
+function cardHtml(p, extra = "", note = "", cls = "", detail = false) {
   const tier = p.ovr >= 90 ? "elite" : p.ovr >= 85 ? "gold" : p.ovr >= 78 ? "silver" : "bronze";
   const conf = p.conf === "West" ? "Запад" : p.conf === "East" ? "Восток" : "";
-  return `<div class="card ${tier} ${cls}" ${extra}>
+  const chips = detail
+    ? `<div class="attr-grid">${CARD_ATTRS.map((k) => `<span><i>${attrShort(k)}</i><b class="${attrLevel(p.a[k])}">${p.a[k]}</b></span>`).join("")}</div>`
+    : `<div class="chips"><span>3PT <b>${p.a.three}</b></span><span>ЗАЩ <b>${Math.round(defenseScore(p.a))}</b></span><span>КЛЧ <b>${p.a.clu}</b></span></div>`;
+  return `<div class="card ${tier} ${cls} ${detail ? "wide" : ""}" ${extra}>
     <div class="ovr">${p.ovr}<span>${p.pos}</span></div>
     <div class="name">${esc(p.name)}</div>
     <div class="team" title="${esc(teamLabel(p.team))}">${p.team === "GL" ? "G League" : `${p.team} · ${conf}`}</div>
+    ${chips}
     <div class="salary">${money(sal(p))}</div>${note}
   </div>`;
 }
@@ -222,6 +259,8 @@ function startSeason() {
   state.lastDay = state.schedule[state.schedule.length - 1].d;
   state.deadline = Math.floor(state.lastDay * 0.6);
   state.day = 0;
+  state.stats = emptyStats();
+  state.injuries = {};
   state.phase = "season";
   state.tab = "overview";
   news(`Сезон стартовал. Дедлайн обменов — день ${state.deadline + 1}.`);
@@ -239,21 +278,63 @@ function userRecord() {
   return { w, l };
 }
 
-// Called after every game the user's team plays: heal, then roll new injuries.
-function afterUserGame() {
+// Plays a game between two clubs, records stats, heals and injures players. kind: "reg" | "po".
+function playMatch(home, away, kind, g = null) {
+  const H = simTeam(home);
+  const A = simTeam(away);
+  const r = simGame(H, A);
+  const book = state.stats[kind];
+  for (const T of [H, A]) {
+    T.rot.forEach((p, i) => {
+      if (p.id == null) return;
+      const line = (book.players[p.id] ||= { g: 0, min: 0, team: T.code });
+      line.g++;
+      line.min += T.mins[i];
+      line.team = T.code;
+      const box = r.box.get(p.id);
+      if (box) for (const k in box) line[k] = (line[k] || 0) + box[k];
+    });
+    const mine = T === H ? r.hs : r.as;
+    const theirs = T === H ? r.as : r.hs;
+    const tl = (book.teams[T.code] ||= { g: 0, pts: 0, opp: 0, poss: 0 });
+    tl.g++;
+    tl.pts += mine;
+    tl.opp += theirs;
+    tl.poss += r.poss;
+    injuries(T);
+  }
+  const userGame = home === state.franchise || away === state.franchise;
+  if (g && userGame) {
+    const mineIds = [...r.box.keys()].filter((id) => ownerTeam(id) === state.franchise);
+    const best = mineIds.sort((x, y) => r.box.get(y).pts - r.box.get(x).pts)[0];
+    if (best != null) g.top = [best, r.box.get(best).pts];
+    g.ot = r.ot;
+  }
+  if (r.gw != null) {
+    if (g) g.gw = r.gw;
+    const opp = ownerTeam(r.gw) === home ? away : home;
+    if (userGame || P(r.gw).ovr >= 90) news(`Победный бросок: ${P(r.gw).name} (${ownerTeam(r.gw)}) против ${opp}.`);
+  }
+  return [r.hs, r.as];
+}
+
+// Players heal one game at a time; anyone who played can get hurt, the fragile more often.
+function injuries(T) {
   for (const id of Object.keys(state.injuries)) {
+    if (ownerTeam(id) !== T.code) continue;
     if (--state.injuries[id] <= 0) {
       delete state.injuries[id];
-      if (rosterIds().includes(Number(id))) news(`${P(id).name} вернулся после травмы.`);
+      if (T.code === state.franchise) news(`${P(id).name} вернулся после травмы.`);
     }
   }
-  for (const id of rosterIds()) {
-    if (healthy(id) && Math.random() < 0.008) {
-      const games = 1 + Math.floor(Math.random() ** 2 * 20);
-      state.injuries[id] = games;
-      news(`Травма: ${P(id).name} пропустит ${games} ${plural(games, "игру", "игры", "игр")}.`);
+  T.rot.forEach((p, i) => {
+    if (p.id == null || !T.mins[i]) return;
+    if (Math.random() < 0.0045 * (1.7 - p.a.dur / 100) * (T.mins[i] / 30)) {
+      const games = 1 + Math.floor(Math.random() ** 2.2 * 25);
+      state.injuries[p.id] = games;
+      if (T.code === state.franchise || p.ovr >= 88) news(`Травма: ${p.name} (${T.code}) пропустит ${games} ${plural(games, "игру", "игры", "игр")}.`);
     }
-  }
+  });
 }
 
 function plural(n, one, few, many) {
@@ -266,17 +347,13 @@ function plural(n, one, few, many) {
 
 function simDay() {
   if (state.phase !== "season") return;
-  const s = strengths();
   for (const g of state.schedule) {
     if (g.d !== state.day) continue;
-    [g.hs, g.as] = playGame(s[g.h], s[g.a]);
-    if (g.h === state.franchise || g.a === state.franchise) {
-      if (g.h === state.franchise) {
-        const r = userRecord();
-        const pct = (r.w + 5) / (r.w + r.l + 10);
-        state.fin.gate += ECON.gateBase + ECON.gateWin * pct;
-      }
-      afterUserGame();
+    [g.hs, g.as] = playMatch(g.h, g.a, "reg", g);
+    if (g.h === state.franchise) {
+      const r = userRecord();
+      const pct = (r.w + 5) / (r.w + r.l + 10);
+      state.fin.gate += ECON.gateBase + ECON.gateWin * pct;
     }
   }
   state.fin.salaryPaid += payroll() / (state.lastDay + 1);
@@ -310,10 +387,8 @@ function startPlayoffs() {
 }
 
 function playPlayoffGame(home, away, gate) {
-  const s = strengths();
-  const [hs, as] = playGame(s[home], s[away]);
+  const [hs, as] = playMatch(home, away, "po");
   if (home === state.franchise) state.fin.playoffGate += gate;
-  if (home === state.franchise || away === state.franchise) afterUserGame();
   return [hs, as];
 }
 
@@ -519,6 +594,7 @@ function render() {
   const views = { franchise: renderFranchise, captain: renderDraft, draft: renderDraft };
   $("#app").innerHTML = (views[state.phase] || renderSeason)();
   renderPicker();
+  renderInfo();
   save();
 }
 
@@ -535,7 +611,7 @@ function slotCard(s) {
     const act = state.phase === "draft" ? `data-act="slot" data-v="${s.key}" tabindex="0" role="button"` : "";
     return `<div class="slot"><div class="slot-label">${s.label}</div><div class="card empty" ${act}>+</div></div>`;
   }
-  return `<div class="slot"><div class="slot-label">${s.label}</div>${cardHtml(P(id))}${chemDots(playerChem(s.key))}</div>`;
+  return `<div class="slot"><div class="slot-label">${s.label}</div>${cardHtml(P(id), `data-act="player" data-v="${id}" tabindex="0" role="button"`)}${chemDots(playerChem(s.key))}</div>`;
 }
 
 function renderDraft() {
@@ -550,6 +626,7 @@ function renderDraft() {
       <h3>Старт</h3><div class="row">${SLOTS.filter((s) => s.starter).map(slotCard).join("")}</div>
       <h3>Скамейка</h3><div class="row">${SLOTS.filter((s) => s.draft && !s.starter).map(slotCard).join("")}</div>
     </section>
+    ${rosterIds().length ? teamProfileHtml(teamRatings(state.franchise), "Профиль вашей команды") : ""}
     ${done ? `<div class="center"><button class="primary" data-act="start">Начать сезон НБА</button></div>` : ""}
     <p class="rules">Химия игрока (0–3): +1 за родную позицию, +1 если в составе есть одноклубник, +1 если хотя бы половина партнёров из той же конференции.
       Рейтинги и зарплаты приблизительные.</p>`;
@@ -564,19 +641,19 @@ function renderPicker() {
   $("#picker-cards").innerHTML = pend.ids.map((id) => {
     const ok = canPick(id);
     return ok
-      ? cardHtml(P(id), `data-act="pick" data-v="${id}" tabindex="0" role="button"`)
-      : cardHtml(P(id), "", `<div class="nofit">Не влезает под потолок</div>`, "disabled");
+      ? cardHtml(P(id), `data-act="pick" data-v="${id}" tabindex="0" role="button"`, "", "", true)
+      : cardHtml(P(id), "", `<div class="nofit">Не влезает под потолок</div>`, "disabled", true);
   }).join("");
 }
 
 const TABS = [
-  ["overview", "Обзор"], ["standings", "Таблица"], ["roster", "Состав"],
+  ["overview", "Обзор"], ["standings", "Таблица"], ["roster", "Состав"], ["stats", "Статистика"], ["teams", "Команды"],
   ["trades", "Обмены"], ["fa", "Свободные агенты"], ["finance", "Финансы"], ["playoffs", "Плей-офф"],
 ];
 
 function renderSeason() {
   const tabs = TABS.filter(([k]) => k !== "playoffs" || state.po);
-  const body = { overview: viewOverview, standings: viewStandings, roster: viewRoster, trades: viewTrades, fa: viewFA, finance: viewFinance, playoffs: viewPlayoffs }[state.tab]();
+  const body = { overview: viewOverview, standings: viewStandings, roster: viewRoster, stats: viewStats, teams: viewTeams, trades: viewTrades, fa: viewFA, finance: viewFinance, playoffs: viewPlayoffs }[state.tab]();
   return `<nav class="tabs">${tabs.map(([k, l]) => `<button class="${state.tab === k ? "on" : ""}" data-act="tab" data-v="${k}">${l}</button>`).join("")}</nav>${body}`;
 }
 
@@ -607,7 +684,12 @@ function gameLine(g) {
   if (g.hs == null) return `<li><span class="muted">День ${g.d + 1}</span> ${home ? "vs" : "@"} ${NBA_TEAMS[opp]}</li>`;
   const my = home ? g.hs : g.as;
   const their = home ? g.as : g.hs;
-  return `<li class="${my > their ? "win" : "loss"}"><b>${my > their ? "W" : "L"}</b> ${home ? "vs" : "@"} ${NBA_TEAMS[opp]} <span class="score">${my}:${their}</span></li>`;
+  const extra = [
+    g.top ? `${esc(P(g.top[0]).name.split(" ").pop())} ${g.top[1]}` : "",
+    g.ot ? (g.ot > 1 ? `${g.ot}OT` : "OT") : "",
+    g.gw != null && ownerTeam(g.gw) === state.franchise ? `победный: ${esc(P(g.gw).name.split(" ").pop())}` : "",
+  ].filter(Boolean).join(" · ");
+  return `<li class="${my > their ? "win" : "loss"}"><b>${my > their ? "W" : "L"}</b> <span class="gl-main">${home ? "vs" : "@"} ${NBA_TEAMS[opp]}${extra ? `<small>${extra}</small>` : ""}</span> <span class="score">${my}:${their}</span></li>`;
 }
 
 function viewOverview() {
@@ -664,20 +746,24 @@ function viewRoster() {
     const id = state.lineup[s.key];
     const sel = state.sel === s.key ? "selected" : "";
     if (id == null) {
-      return `<tr class="${sel}"><td>${s.label}</td><td colspan="4" class="muted">Свободно</td>
+      return `<tr class="${sel}"><td>${s.label}</td><td colspan="8" class="muted">Свободно</td>
         <td><button data-act="select" data-v="${s.key}" ${state.sel ? "" : "disabled"}>Сюда</button></td><td></td></tr>`;
     }
     const p = P(id);
     const inj = state.injuries[id] ? `<span class="warn"> травма (${state.injuries[id]})</span>` : "";
-    return `<tr class="${sel}"><td>${s.label}</td><td><b>${esc(p.name)}</b>${inj}</td><td>${p.pos}</td><td>${p.ovr}</td><td>${money(sal(p))}</td>
+    const st = state.stats.reg.players[id];
+    return `<tr class="${sel}"><td>${s.label}</td><td>${playerLink(p)}${inj}</td><td>${p.pos}</td><td>${p.ovr}</td>
+      <td class="${attrLevel(p.a.three)}">${p.a.three}</td><td class="${attrLevel(defenseScore(p.a))}">${Math.round(defenseScore(p.a))}</td><td class="${attrLevel(p.a.clu)}">${p.a.clu}</td>
+      <td>${st ? (st.pts / st.g).toFixed(1) : "—"}</td><td>${money(sal(p))}</td>
       <td><button data-act="select" data-v="${s.key}">${state.sel === s.key ? "Отмена" : state.sel ? "Сюда" : "Переставить"}</button></td>
       <td>${chemDots(playerChem(s.key))} ${canMove && rosterIds().length > ROSTER_MIN ? `<button class="ghost" data-act="waive" data-v="${s.key}">Отчислить</button>` : ""}</td></tr>`;
   });
   const dead = state.dead.length ? `<p class="muted">Мёртвые деньги: ${state.dead.map((d) => `${esc(P(d.id).name)} ${money(d.sal)}`).join(", ")}</p>` : "";
   return `<section class="panel table-wrap"><h3>Состав (${rosterIds().length}/${ROSTER_MAX})</h3>
-    <table class="roster"><thead><tr><th>Слот</th><th>Игрок</th><th>Поз</th><th>OVR</th><th>Зарплата</th><th></th><th>Химия</th></tr></thead><tbody>${rows.join("")}</tbody></table>
+    <table class="roster"><thead><tr><th>Слот</th><th>Игрок</th><th>Поз</th><th>OVR</th><th>3PT</th><th>ЗАЩ</th><th>КЛЧ</th><th>ОЧК</th><th>Зарплата</th><th></th><th>Химия</th></tr></thead><tbody>${rows.join("")}</tbody></table>
     ${dead}
-    <p class="rules">Нажмите «Переставить», затем «Сюда» у другого слота, чтобы поменять игроков местами (влияет на химию позиции). На площадку выходят лучшие здоровые игроки.
+    <p class="rules">Стартовая пятёрка — игроки в слотах PG–C, они играют 30–35 минут. Со скамейки выходят пятеро лучших по OVR (24, 20, 16, 10 и 6 минут), остальные не играют.
+    Травмированного стартера заменяет лучший здоровый запасной. Нажмите «Переставить», затем «Сюда» у другого слота, чтобы поменять игроков местами.
     В составе должно быть от ${ROSTER_MIN} до ${ROSTER_MAX} игроков. Зарплата отчисленного игрока остаётся в ведомости до конца сезона.</p></section>`;
 }
 
@@ -695,7 +781,7 @@ function viewTrades() {
   let verdict = "";
   if (out != null && inn != null) {
     const v = tradeVerdict(out, inn);
-    verdict = `<div class="trade-cards">${cardHtml(P(out))}<div class="arrow">⇄</div>${cardHtml(P(inn))}</div>
+    verdict = `<div class="trade-cards">${cardHtml(P(out), "", "", "", true)}<div class="arrow">⇄</div>${cardHtml(P(inn), "", "", "", true)}</div>
       <ul class="checks"><li class="${v.money.ok ? "pos" : "neg"}">Зарплаты: ${v.money.reason}</li><li class="${v.ai.ok ? "pos" : "neg"}">${v.ai.reason}</li></ul>
       <button class="primary" data-act="trade" ${v.ok ? "" : "disabled"}>Предложить обмен</button>`;
   }
@@ -716,7 +802,7 @@ function viewFA() {
   const rows = fas.map((p) => {
     const c = signingCheck(payroll(), sal(p), state.mleUsed);
     const can = open && c.ok && !full;
-    return `<tr><td><b>${esc(p.name)}</b></td><td>${p.pos}</td><td>${p.ovr}</td><td>${money(sal(p))}</td>
+    return `<tr><td>${playerLink(p)}</td><td>${p.pos}</td><td>${p.ovr}</td><td>${money(sal(p))}</td>
       <td class="${c.ok ? "pos" : "neg"}">${c.reason}</td><td><button data-act="sign" data-v="${p.id}" ${can ? "" : "disabled"}>Подписать</button></td></tr>`;
   }).join("");
   return `<section class="panel table-wrap"><h3>Свободные агенты</h3>
@@ -767,6 +853,135 @@ function viewPlayoffs() {
     ${rounds ? `<section class="panel table-wrap"><h3>Сетка</h3><div class="bracket">${rounds}</div></section>` : ""}`;
 }
 
+
+// ---------- players, teams and stats ----------
+const playerLink = (p) => `<button class="link" data-act="player" data-v="${p.id}">${esc(p.name)}</button>`;
+const pct = (m, a) => (a ? `${((100 * m) / a).toFixed(1)}%` : "—");
+const per = (x, g) => (g ? (x / g).toFixed(1) : "—");
+
+function teamProfileHtml(t, title) {
+  const rows = [
+    ["Атака", t.atk], ["Защита", t.def], ["Трёхочковые", t.three], ["Игра у кольца", t.ins], ["Пас", t.pas],
+    ["Защита периметра", t.perD], ["Защита кольца", t.intD], ["Подбор", t.reb], ["Атлетизм", t.ath], ["Клатч лидеров", t.clu],
+  ];
+  return `<section class="panel"><h3>${title}</h3><div class="bars">${rows.map(([l, v]) => attrBar(l, v, teamLevel)).join("")}</div>
+    ${t.ortg != null ? `<p class="muted">Рейтинг атаки ${t.ortg.toFixed(1)} · рейтинг защиты ${t.drtg.toFixed(1)} · разница ${t.net >= 0 ? "+" : ""}${t.net.toFixed(1)} · темп ${t.pace.toFixed(1)}</p>` : ""}</section>`;
+}
+
+function attrBar(label, v, level = attrLevel) {
+  const n = Math.round(v);
+  return `<div class="bar-row"><span>${label}</span><div class="bar"><div class="${level(n)}" style="width:${n}%"></div></div><b class="${level(n)}">${n}</b></div>`;
+}
+
+function statLine(st) {
+  if (!st || !st.g) return `<p class="muted">Ещё не играл.</p>`;
+  const cells = [
+    ["И", st.g], ["МИН", per(st.min, st.g)], ["ОЧК", per(st.pts, st.g)], ["ПДБ", per(st.reb, st.g)], ["ПАС", per(st.ast, st.g)],
+    ["ПХВ", per(st.stl, st.g)], ["БЛК", per(st.blk, st.g)], ["ПОТ", per(st.tov, st.g)],
+    ["С ИГРЫ", pct(st.fgm, st.fga)], ["3-ОЧК", `${pct(st.tpm, st.tpa)} (${st.tpm || 0}/${st.tpa || 0})`], ["ШТР", pct(st.ftm, st.fta)],
+  ];
+  return `<div class="statline">${cells.map(([l, v]) => `<span><i>${l}</i><b>${v}</b></span>`).join("")}</div>
+    <div class="statline clutch"><span><i>Клатч очки</i><b>${st.cpts || 0}</b></span><span><i>Клатч бросок</i><b>${st.cfgm || 0}/${st.cfga || 0} (${pct(st.cfgm, st.cfga)})</b></span><span><i>Победные броски</i><b>${st.gw || 0}</b></span></div>`;
+}
+
+function clutchText(v) {
+  if (v >= 92) return "Убийца в концовках: берёт последний бросок и чаще всего забивает.";
+  if (v >= 82) return "Надёжен в клатче: в концовках играет лучше обычного.";
+  if (v >= 65) return "В концовках играет примерно как обычно.";
+  if (v >= 50) return "В концовках немного теряется, но может и зарезать.";
+  return "Давление концовок мешает: процент заметно падает, хотя шанс есть всегда.";
+}
+
+function playerInfo(id) {
+  const p = P(id);
+  const groups = [...new Set(ATTRS.map((a) => a.group))];
+  const owner = state.schedule ? ownerTeam(id) : null;
+  const where = owner === state.franchise ? "Ваша команда" : owner === "FA" ? "Свободный агент" : owner === "WAIVED" ? "Отчислен" : owner ? NBA_TEAMS[owner] : teamLabel(p.team);
+  return `<div class="info-head">${cardHtml(p)}<div>
+      <h2>${esc(p.name)}</h2>
+      <p class="muted">${p.pos} · ${where} · ${money(sal(p))} · стиль: ${p.styles.map((st) => STYLE_NAMES[st]).join(" + ")}</p>
+      ${state.injuries[id] ? `<p class="warn">Травма: ещё ${state.injuries[id]} ${plural(state.injuries[id], "игра", "игры", "игр")}</p>` : ""}
+      <p><b>Клатч ${p.a.clu}.</b> ${clutchText(p.a.clu)}</p></div></div>
+    <div class="attr-groups">${groups.map((gname) => `<div><h4>${gname}</h4><div class="bars">${ATTRS.filter((a) => a.group === gname).map((a) => attrBar(a.label, p.a[a.key])).join("")}</div></div>`).join("")}</div>
+    <h4>Регулярный сезон</h4>${statLine(state.stats.reg.players[id])}
+    ${state.stats.po.players[id] ? `<h4>Плей-офф</h4>${statLine(state.stats.po.players[id])}` : ""}`;
+}
+
+function teamInfoHtml(code) {
+  const ids = code === state.franchise ? rosterIds() : Object.keys(state.owners).filter((id) => state.owners[id] === code).map(Number);
+  const players = ids.map(P).sort((a, b) => b.ovr - a.ovr);
+  const rows = players.map((p) => {
+    const st = state.stats.reg.players[p.id];
+    return `<tr><td>${playerLink(p)}${state.injuries[p.id] ? ' <span class="warn">травма</span>' : ""}</td><td>${p.pos}</td><td>${p.ovr}</td>
+      ${["three", "ins", "pas", "perD", "intD", "reb", "clu"].map((k) => `<td class="${attrLevel(p.a[k])}">${p.a[k]}</td>`).join("")}
+      <td>${st ? per(st.pts, st.g) : "—"}</td></tr>`;
+  }).join("");
+  return `<h2>${teamName(code)}</h2>${teamProfileHtml(teamRatings(code), "Рейтинги команды")}
+    <div class="table-wrap"><table><thead><tr><th>Игрок</th><th>Поз</th><th>OVR</th><th>3PT</th><th>ПРХ</th><th>ПАС</th><th>П-З</th><th>З-К</th><th>ПДБ</th><th>КЛЧ</th><th>ОЧК</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="11" class="muted">Нет игроков из базы — клуб играет заменами.</td></tr>`}</tbody></table></div>`;
+}
+
+const STYLE_NAMES = { sniper: "снайпер", scorer: "бомбардир", slasher: "проходы", playmaker: "плеймейкер", threeD: "3&D", lockdown: "защитник-стоппер",
+  rim: "защитник кольца", stretch: "стретч", post: "игра в посте", athlete: "атлет", twoway: "универсал", glue: "командный игрок" };
+
+function renderInfo() {
+  const info = state.info;
+  $("#info").hidden = !info;
+  if (!info) return;
+  $("#info-body").innerHTML = info.type === "player" ? playerInfo(info.id) : teamInfoHtml(info.id);
+}
+
+function viewStats() {
+  const kind = state.po && state.statKind === "po" ? "po" : "reg";
+  const book = state.stats[kind].players;
+  const entries = Object.entries(book).map(([id, st]) => ({ p: P(id), st }));
+  const maxG = Math.max(1, ...Object.values(state.stats[kind].teams).map((t) => t.g));
+  const qualified = entries.filter((e) => e.st.g >= Math.max(1, maxG * 0.4));
+  const board = (title, val, fmt, list = qualified) => {
+    const top = list.map((e) => ({ ...e, v: val(e.st) })).filter((e) => Number.isFinite(e.v)).sort((a, b) => b.v - a.v).slice(0, 5);
+    return `<div class="leader"><h4>${title}</h4><ol>${top.map((e) => `<li class="${ownerTeam(e.p.id) === state.franchise ? "mine" : ""}">${playerLink(e.p)} <span>${fmt(e.v)}</span></li>`).join("")}</ol></div>`;
+  };
+  const f1 = (v) => v.toFixed(1);
+  const f0 = (v) => String(Math.round(v));
+  const fp = (v) => `${(100 * v).toFixed(1)}%`;
+  const shooters = qualified.filter((e) => (e.st.tpa || 0) >= maxG * 2);
+  const clutchers = entries.filter((e) => (e.st.cfga || 0) >= Math.max(3, maxG * 0.15));
+  const mine = rosterIds().map((id) => ({ p: P(id), st: book[id] })).filter((e) => e.st).sort((a, b) => b.st.pts / b.st.g - a.st.pts / a.st.g);
+  const toggle = state.po ? `<div class="controls"><button class="${kind === "reg" ? "on" : ""}" data-act="stat-kind" data-v="reg">Регулярный сезон</button><button class="${kind === "po" ? "on" : ""}" data-act="stat-kind" data-v="po">Плей-офф</button></div>` : "";
+  if (!entries.length) return `<section class="panel">${toggle}<p class="muted">Статистика появится после первых игр.</p></section>`;
+  return `<section class="panel">${toggle}<h3>Лидеры лиги</h3><div class="leaders">
+      ${board("Очки за игру", (s) => s.pts / s.g, f1)}${board("Подборы", (s) => (s.reb || 0) / s.g, f1)}${board("Передачи", (s) => (s.ast || 0) / s.g, f1)}
+      ${board("Перехваты", (s) => (s.stl || 0) / s.g, f1)}${board("Блок-шоты", (s) => (s.blk || 0) / s.g, f1)}${board("Трёхочковые (всего)", (s) => s.tpm || 0, f0, entries)}
+      ${board("Процент трёх", (s) => s.tpm / s.tpa, fp, shooters)}${board("Клатч-очки", (s) => s.cpts || 0, f0, entries)}
+      ${board("Клатч-процент", (s) => s.cfgm / s.cfga, fp, clutchers)}${board("Победные броски", (s) => s.gw || 0, f0, entries.filter((e) => e.st.gw))}
+    </div></section>
+    <section class="panel table-wrap"><h3>Ваша команда</h3><table><thead><tr><th>Игрок</th><th>И</th><th>МИН</th><th>ОЧК</th><th>ПДБ</th><th>ПАС</th><th>ПХВ</th><th>БЛК</th><th>ПОТ</th><th>С ИГРЫ</th><th>3-ОЧК</th><th>ШТР</th><th>КЛЧ О</th><th>КЛЧ %</th><th>ПБ</th></tr></thead><tbody>
+    ${mine.map(({ p, st }) => `<tr><td>${playerLink(p)}</td><td>${st.g}</td><td>${per(st.min, st.g)}</td><td>${per(st.pts, st.g)}</td><td>${per(st.reb || 0, st.g)}</td><td>${per(st.ast || 0, st.g)}</td>
+      <td>${per(st.stl || 0, st.g)}</td><td>${per(st.blk || 0, st.g)}</td><td>${per(st.tov || 0, st.g)}</td><td>${pct(st.fgm, st.fga)}</td><td>${pct(st.tpm, st.tpa)}</td><td>${pct(st.ftm, st.fta)}</td>
+      <td>${st.cpts || 0}</td><td>${pct(st.cfgm, st.cfga)}</td><td>${st.gw || 0}</td></tr>`).join("")}</tbody></table>
+    <p class="rules">Клатч — последние 5 минут и овертаймы при разнице не больше 5 очков. ПБ — победные броски.</p></section>`;
+}
+
+const TEAM_COLS = [
+  ["ovr", "OVR"], ["atk", "АТК"], ["def", "ЗАЩ"], ["three", "3PT"], ["ins", "ПРХ"], ["pas", "ПАС"], ["perD", "П-З"], ["intD", "З-К"],
+  ["reb", "ПДБ"], ["clu", "КЛЧ"], ["ortg", "ORtg"], ["drtg", "DRtg"], ["net", "NET"], ["pace", "Темп"],
+];
+
+function viewTeams() {
+  const rows = ALL_TEAMS.map(teamRatings);
+  const key = state.teamSort;
+  const asc = key === "drtg";
+  rows.sort((a, b) => ((asc ? a[key] - b[key] : b[key] - a[key]) || b.ovr - a.ovr));
+  const fmt = (k, v) => (v == null ? "—" : k === "net" ? `${v >= 0 ? "+" : ""}${v.toFixed(1)}` : ["ortg", "drtg", "pace"].includes(k) ? v.toFixed(1) : Math.round(v));
+  return `<section class="panel table-wrap"><h3>Рейтинги команд</h3>
+    <table class="teams-table"><thead><tr><th>Команда</th>${TEAM_COLS.map(([k, l]) => `<th><button class="link ${key === k ? "on" : ""}" data-act="sort" data-v="${k}">${l}</button></th>`).join("")}</tr></thead><tbody>
+    ${rows.map((t) => `<tr class="${t.code === state.franchise ? "me" : ""}"><td><button class="link" data-act="team" data-v="${t.code}">${t.code === state.franchise ? "★ " : ""}${t.code}</button></td>
+      ${TEAM_COLS.map(([k]) => `<td class="${["ortg", "drtg", "pace", "net"].includes(k) || t[k] == null ? "" : teamLevel(t[k])}">${fmt(k, t[k])}</td>`).join("")}</tr>`).join("")}
+    </tbody></table>
+    <p class="rules">Рейтинги считаются по текущей ротации с учётом минут и травм. ORtg и DRtg — очки за 100 владений в атаке и в защите (меньше DRtg — лучше), NET — разница.
+    Нажмите на заголовок, чтобы отсортировать, или на команду, чтобы открыть её состав.</p></section>`;
+}
+
 // ---------- events ----------
 function act(name, v) {
   confirmRestart = name === "restart" && !confirmRestart;
@@ -788,6 +1003,11 @@ function act(name, v) {
       if (state.sel == null) state.sel = v;
       else { if (state.sel !== v) swapSlots(state.sel, v); state.sel = null; }
       break;
+    case "player": state.info = { type: "player", id: Number(v) }; break;
+    case "team": state.info = { type: "team", id: v }; break;
+    case "close-info": state.info = null; break;
+    case "stat-kind": state.statKind = v; break;
+    case "sort": state.teamSort = v; break;
     case "waive": waive(v); state.trade = { out: null, in: null }; break;
     case "sign": sign(Number(v)); break;
     case "trade": doTrade(); break;
@@ -799,6 +1019,7 @@ function act(name, v) {
 }
 
 document.addEventListener("click", (e) => {
+  if (e.target.id === "info") return act("close-info");
   const el = e.target.closest("[data-act]");
   if (!el || el.tagName === "SELECT" || el.disabled) return;
   act(el.dataset.act, el.dataset.v);
@@ -806,6 +1027,7 @@ document.addEventListener("click", (e) => {
 document.addEventListener("keydown", (e) => {
   const el = e.target.closest?.("[data-act][role=button]");
   if (el && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); act(el.dataset.act, el.dataset.v); }
+  if (e.key === "Escape" && state.info) act("close-info");
 });
 document.addEventListener("change", (e) => {
   const el = e.target;
