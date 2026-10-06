@@ -171,19 +171,33 @@ function slotOptions(slot) {
     options.push(p);
   }
   if (!options.some(affordable)) {
-    const cheap = natural.filter(affordable).sort((a, b) => sal(a) - sal(b))[0];
+    // Always offer at least one player who fits: same position first, then any position, then a G League prospect.
+    const byPrice = (list) => list.filter(affordable).sort((a, b) => sal(a) - sal(b))[0];
+    const gLeague = NBA_PLAYERS.filter((p) => p.team === "GL" && !rosterIds().includes(p.id));
+    const cheap = byPrice(natural) || byPrice(pool) || byPrice(gLeague);
     if (cheap) options[options.length - 1] = cheap;
+    else {
+      // Payroll is already over the hard cap (old save): let the cheapest prospect through so the draft can finish.
+      const prospect = gLeague.sort((a, b) => sal(a) - sal(b))[0];
+      options[options.length - 1] = prospect;
+      return { ids: shuffle(options).map((p) => p.id), forced: prospect.id };
+    }
   }
-  return shuffle(options).map((p) => p.id);
+  return { ids: shuffle(options).map((p) => p.id) };
 }
 
 function openSlot(key) {
-  state.pending = { slot: key, ids: slotOptions(slotOf(key)) };
+  state.pending = { slot: key, ...slotOptions(slotOf(key)) };
 }
 
 function openCaptain() {
   const ids = shuffle(NBA_PLAYERS.filter((p) => p.team !== "GL" && p.ovr >= 88)).slice(0, CHOICES).map((p) => p.id);
   state.pending = { slot: "captain", ids };
+}
+
+function canPick(id) {
+  const pend = state.pending;
+  return pend.slot === "captain" || pend.forced === id || affordable(P(id));
 }
 
 function pick(id) {
@@ -192,7 +206,7 @@ function pick(id) {
     state.lineup[p.pos] = id;
     state.phase = "draft";
   } else {
-    if (!affordable(p)) return;
+    if (!canPick(id)) return;
     state.lineup[state.pending.slot] = id;
   }
   state.pending = null;
@@ -548,7 +562,7 @@ function renderPicker() {
   $("#picker-title").textContent = pend.slot === "captain" ? "Выберите капитана" : `Позиция: ${slotOf(pend.slot).label}`;
   $("#picker-sub").innerHTML = `Ведомость: ${money(payroll())} · до 2-го апрона ${money(APRON_2 - payroll())}`;
   $("#picker-cards").innerHTML = pend.ids.map((id) => {
-    const ok = pend.slot === "captain" || affordable(P(id));
+    const ok = canPick(id);
     return ok
       ? cardHtml(P(id), `data-act="pick" data-v="${id}" tabindex="0" role="button"`)
       : cardHtml(P(id), "", `<div class="nofit">Не влезает под потолок</div>`, "disabled");
@@ -804,4 +818,6 @@ document.addEventListener("change", (e) => {
 });
 $("#restart").addEventListener("click", (e) => { e.stopPropagation(); act("restart"); });
 
+// Saves from older versions could get stuck on a pick where no card fits under the cap: deal new cards.
+if (state.pending && state.pending.slot !== "captain" && !state.pending.ids.some(canPick)) openSlot(state.pending.slot);
 render();
