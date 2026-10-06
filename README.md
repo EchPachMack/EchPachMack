@@ -25,14 +25,20 @@ for `connect` the first time it sets up a toolkit.
 
 ## NBA FUT Draft
 
-`futdraft/` is a FUT Draft–style browser game that uses only NBA players. Open
-`futdraft/index.html` in a browser. It has no build step and no dependencies.
+`futdraft/` is a FUT Draft–style browser game that uses only NBA players, followed by a full NBA season.
+Open `futdraft/index.html` in a browser. It has no build step and no dependencies. Progress is saved in `localStorage`.
 
-1. Pick a captain from 5 players rated 88+.
-2. Click each empty slot (PG, SG, SF, PF, C and 3 bench spots), then pick 1 of 5 cards.
-   Starter slots can offer players from adjacent positions, but those players lose the position chemistry point.
-3. Play a 4-round tournament. Your win chance depends on team rating and chemistry.
+1. Choose the franchise your draft team replaces. That club's undrafted players become free agents.
+2. Pick a captain from 5 players rated 88+. Then fill 13 slots (5 starters and 8 bench) by picking 1 of 5 cards for each.
+   The second apron works as a hard cap during the draft. Cards that would break it are locked.
+3. Play an 82-game season on the NBA format: 4 games against each division rival, 3 or 4 against the rest of the
+   conference, and 2 against the other conference. The play-in follows (7–10 seeds), then four best-of-7 rounds.
+4. During the season you can make 1-for-1 trades until the deadline, using 2023 CBA salary matching. You can sign
+   free agents with cap room, the MLE or a minimum deal, release players (their salary stays as dead money), and
+   reorder the roster. Players on your team can get injured.
+5. Finances use 2025-26 cap figures: cap, tax line, both aprons and the salary floor. The luxury tax is incremental.
+   Revenue comes from media, tickets (these grow with win %) and playoff home games. The season ends with a
+   profit-and-loss summary and the owner's verdict.
 
-Player chemistry runs from 0 to 3: +1 for the player's natural position, +1 for a teammate from the same NBA team,
-and +1 when 4 or more other players come from the same conference. Rosters and ratings are approximate fan
-estimates. Edit them in `futdraft/players.js`.
+Files: `players.js` (player pool), `finance.js` (cap rules and economics), `league.js` (schedule, simulation,
+playoffs) and `app.js` (UI). Ratings and salaries are approximate fan estimates.
