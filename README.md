@@ -29,7 +29,9 @@ for `connect` the first time it sets up a toolkit.
 Open `futdraft/index.html` in a browser. It has no build step and no dependencies. Progress is saved in `localStorage`.
 
 1. Choose the franchise your draft team replaces. That club's undrafted players become free agents.
-2. Pick a captain from 5 players rated 88+. Then fill 13 slots (5 starters and 8 bench) by picking 1 of 5 cards for each.
+2. Choose a difficulty (Rookie, Pro, Legend). It sets how much chemistry and execution AI clubs get.
+   Pick a captain from 5 All-Stars (OVR 88+). Then fill 13 slots (5 starters and 8 bench) by picking 1 of 5 cards for each.
+   After the captain, All-Stars are rare: a 12% chance per pick. Cards rated 82-87 also come up less often than role players.
    The second apron works as a hard cap during the draft. Cards that would break it are locked.
 3. Play an 82-game season on the NBA format: 4 games against each division rival, 3 or 4 against the rest of the
    conference, and 2 against the other conference. The play-in follows (7–10 seeds), then four best-of-7 rounds.

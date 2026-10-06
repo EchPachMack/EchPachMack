@@ -61,8 +61,9 @@ function rotationRating(ovrs, filler = 74) {
 // Minutes for a 10-man rotation (starters first). Sum = 240.
 const MINUTES = [35, 34, 33, 32, 30, 24, 20, 16, 10, 6];
 const STYLE_USAGE = { scorer: 1.3, slasher: 1.1, playmaker: 1.05, sniper: 1.0, post: 1.0, athlete: 0.95, stretch: 0.9, twoway: 0.9, threeD: 0.75, glue: 0.7, lockdown: 0.65, rim: 0.6 };
-const REPLACEMENT = { id: null, name: "Игрок замены", pos: "SF", ovr: 72, styles: ["glue"],
-  a: { three: 60, mid: 58, ft: 68, ins: 60, pas: 55, bh: 55, perD: 58, intD: 55, stl: 55, blk: 50, reb: 55, ath: 62, dur: 80, iq: 60, clu: 45 } };
+// Depth player for clubs whose real bench is not in the player pool: a solid end-of-rotation NBA player.
+const REPLACEMENT = { id: null, name: "Игрок замены", pos: "SF", ovr: 76, styles: ["glue"],
+  a: { three: 66, mid: 62, ft: 72, ins: 64, pas: 60, bh: 60, perD: 64, intD: 60, stl: 60, blk: 55, reb: 60, ath: 66, dur: 80, iq: 66, clu: 50 } };
 
 // Builds what the simulation needs for one team: rotation, minutes-weighted ratings, usage and shot mix.
 function makeTeam(code, players, chem) {
@@ -116,8 +117,8 @@ function simGame(home, away, rand = Math.random) {
   function possession(off, def, clutch, homeTeam, left, extra = 0) {
     const o = off.r;
     const d = def.r;
-    const boost = (homeTeam ? 0.012 : 0) + off.chem * 0.004;
-    const tov = 0.135 + (68 - (o.bh + o.pas) / 2) * 0.0016 + (d.stl - 66) * 0.0018 - off.chem * 0.002;
+    const boost = (homeTeam ? 0.012 : 0) + off.chem * 0.004 + (off.edge || 0);
+    const tov = 0.135 + (68 - (o.bh + o.pas) / 2) * 0.0016 + (d.stl - 66) * 0.0018 - off.chem * 0.002 - (off.edge || 0) * 0.5;
     if (extra === 0 && rand() < tov) {
       add(off.rot[pickIndex(off.usage, rand)], "tov");
       if (rand() < 0.6) add(def.rot[pickIndex(def.rot.map((p, i) => p.a.stl * def.mins[i]), rand)], "stl");

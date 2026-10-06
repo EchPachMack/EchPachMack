@@ -30,7 +30,7 @@ function freshState() {
     v: DATA_VERSION, phase: "franchise", franchise: null, lineup: {}, pending: null,
     owners: {}, dead: [], mleUsed: false, injuries: {}, schedule: null, day: 0, lastDay: 0, deadline: 0,
     fin: { gate: 0, playoffGate: 0, salaryPaid: 0 }, po: null, tab: "overview", sel: null,
-    trade: { out: null, in: null }, news: [], stats: emptyStats(), info: null, statKind: "reg", teamSort: "net",
+    trade: { out: null, in: null }, news: [], stats: emptyStats(), info: null, statKind: "reg", teamSort: "net", difficulty: "pro",
   };
 }
 
@@ -123,11 +123,21 @@ function teamRotation(code) {
   return Object.keys(state.owners).filter((id) => state.owners[id] === code && healthy(id)).map(P).sort((a, b) => b.ovr - a.ovr);
 }
 
-// Chemistry turns into a small shooting and ball-security bonus (-2.5..+2.5). AI clubs are settled teams: +1.
+// AI clubs are settled teams with coaching and systems: on harder levels they get more chemistry and execution.
+const DIFFICULTY = {
+  rookie: { label: "Новичок", chem: 0.5, edge: -0.012, text: "Соперники слабее, сезон на 55+ побед реален." },
+  pro: { label: "Профи", chem: 2, edge: 0.012, text: "Лига как в жизни: за плей-офф придётся бороться." },
+  legend: { label: "Легенда", chem: 3, edge: 0.024, text: "Каждый клуб играет на пределе. Только для лучших драфтов." },
+};
+const difficulty = () => DIFFICULTY[state.difficulty || "pro"];
+
+// Chemistry turns into a small shooting and ball-security bonus (-2.5..+2.5).
 function simTeam(code) {
   const c = teamChem();
-  const chem = code === state.franchise ? (c.sum / c.max) * 5 - 2.5 : 1;
-  return makeTeam(code, teamRotation(code), chem);
+  if (code === state.franchise) return makeTeam(code, teamRotation(code), (c.sum / c.max) * 5 - 2.5);
+  const t = makeTeam(code, teamRotation(code), difficulty().chem);
+  t.edge = difficulty().edge;
+  return t;
 }
 
 // Team-level ratings: minutes-weighted attributes of the current rotation plus results on the court.
@@ -160,7 +170,7 @@ function cardHtml(p, extra = "", note = "", cls = "", detail = false) {
     ? `<div class="attr-grid">${CARD_ATTRS.map((k) => `<span><i>${attrShort(k)}</i><b class="${attrLevel(p.a[k])}">${p.a[k]}</b></span>`).join("")}</div>`
     : `<div class="chips"><span>3PT <b>${p.a.three}</b></span><span>ЗАЩ <b>${Math.round(defenseScore(p.a))}</b></span><span>КЛЧ <b>${p.a.clu}</b></span></div>`;
   return `<div class="card ${tier} ${cls} ${detail ? "wide" : ""}" ${extra}>
-    <div class="ovr">${p.ovr}<span>${p.pos}</span></div>
+    <div class="ovr">${p.ovr}<span>${p.pos}</span></div>${p.ovr >= ALL_STAR_OVR ? `<div class="allstar">ALL-STAR</div>` : ""}
     <div class="name">${esc(p.name)}</div>
     <div class="team" title="${esc(teamLabel(p.team))}">${p.team === "GL" ? "G League" : `${p.team} · ${conf}`}</div>
     ${chips}
@@ -198,15 +208,30 @@ function affordable(p) {
   return payroll() + sal(p) + reserveCost(left, pool) <= APRON_2;
 }
 
+// All-Stars (OVR 88+) are rare after the captain pick; 85-87 cards come up less often than role players.
+const ALL_STAR_OVR = 88;
+const ALL_STAR_CHANCE = 0.12;
+const rarity = (p) => (p.ovr >= ALL_STAR_OVR ? 0 : p.ovr >= 85 ? 0.45 : p.ovr >= 82 ? 0.75 : 1);
+
+function weightedSample(list, k) {
+  const pool = list.slice();
+  const out = [];
+  while (out.length < k && pool.length) {
+    const i = pickIndex(pool.map(rarity), Math.random);
+    if (rarity(pool[i]) === 0) break;
+    out.push(pool.splice(i, 1)[0]);
+  }
+  return out;
+}
+
 function slotOptions(slot) {
   const pool = shuffle(draftable());
   const natural = pool.filter((p) => slot.accepts.includes(p.pos));
   const adjacent = pool.filter((p) => slot.adjacent.includes(p.pos));
-  const options = adjacent.slice(0, Math.min(2, adjacent.length));
-  for (const p of natural) {
-    if (options.length >= CHOICES) break;
-    options.push(p);
-  }
+  const options = weightedSample(adjacent, Math.min(2, adjacent.length));
+  options.push(...weightedSample(natural, CHOICES - options.length));
+  const stars = natural.filter((p) => p.ovr >= ALL_STAR_OVR);
+  if (stars.length && Math.random() < ALL_STAR_CHANCE) options[Math.floor(Math.random() * options.length)] = stars[0];
   if (!options.some(affordable)) {
     // Always offer at least one player who fits: same position first, then any position, then a G League prospect.
     const byPrice = (list) => list.filter(affordable).sort((a, b) => sal(a) - sal(b))[0];
@@ -599,7 +624,10 @@ function render() {
 }
 
 function renderFranchise() {
-  return `<h2>Выберите франшизу</h2>
+  return `<h2>Сложность</h2>
+    <div class="controls">${Object.entries(DIFFICULTY).map(([k, d]) => `<button class="${(state.difficulty || "pro") === k ? "on" : ""}" data-act="difficulty" data-v="${k}">${d.label}</button>`).join("")}</div>
+    <p class="muted">${difficulty().text}</p>
+    <h2>Выберите франшизу</h2>
     <p class="muted">Ваша драфт-команда заменит этот клуб в лиге. Его игроки, которых вы не возьмёте, станут свободными агентами.</p>
     ${["East", "West"].map((conf) => `<h3>${conf === "East" ? "Восточная конференция" : "Западная конференция"}</h3>
       <div class="teams">${DIVISIONS[conf].flat().map((t) => `<button class="team-btn" data-act="franchise" data-v="${t}"><b>${t}</b><span>${NBA_TEAMS[t]}</span></button>`).join("")}</div>`).join("")}`;
@@ -1003,6 +1031,7 @@ function act(name, v) {
       if (state.sel == null) state.sel = v;
       else { if (state.sel !== v) swapSlots(state.sel, v); state.sel = null; }
       break;
+    case "difficulty": state.difficulty = v; break;
     case "player": state.info = { type: "player", id: Number(v) }; break;
     case "team": state.info = { type: "team", id: v }; break;
     case "close-info": state.info = null; break;
